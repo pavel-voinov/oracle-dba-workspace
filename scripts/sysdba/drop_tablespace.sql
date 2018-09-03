@@ -1,0 +1,5 @@
+/*
+*/
+set serveroutput on size 1000000
+DROP TABLESPACE "&1" INCLUDING CONTENTS AND DATAFILES
+/
