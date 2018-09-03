@@ -17,12 +17,8 @@ INVENTORY="$INVENTORY_DIR/db_inventory.txt"
 
 if [ "$DB_USER" = 'system' ]; then
   DB_CONN_PREFIX='/@'
-elif [ "$DB_USER" = 'tss_admin' ]; then
-  DB_CONN_PREFIX='/@tss-'
-elif [ "$DB_USER" = 'rep_api' ]; then
-  DB_CONN_PREFIX='/@rep-'
 else
-  DB_CONN_PREFIX="[$DB_USER]/@tss-"
+  DB_CONN_PREFIX="[$DB_USER]/@admin-"
 fi
 
 if [ $# -lt 1 ] ; then
