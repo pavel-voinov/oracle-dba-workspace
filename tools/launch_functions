@@ -1,0 +1,217 @@
+#!/bin/bash
+
+# Default variables
+BUILD_HOST=build.oneplatform.build
+# set AWS REGION from environment variable specified in upper level scripts
+AWS_REGION=${AWS_REGION:-'us-west-2'}
+
+# ETCD
+ETCD_PEERS='http://build01.etcd.oneplatform.build:2379,http://build02.etcd.oneplatform.build:2379,http://build03.etcd.oneplatform.build:2379'
+
+aws_get_latest_ami_id () {
+  local _AMI_BASE=$1
+  local _AMI_BASE_RELEASE=${2:-'stable'}
+  local _AWS_REGION=${3:-"$AWS_REGION"}
+  local _AMI_ID=''
+
+  if [ ! "$_AMI_BASE" == ami-* ]; then
+    _AMI_ID=$( etcdctl -C=${ETCD_PEERS} get /aws/amis/$_AMI_BASE/$_AWS_REGION/latest/$_AMI_BASE_RELEASE/amiid )
+  else
+    _AMI_ID=$_AMI_BASE
+  fi
+
+  if [[ -z "$_AMI_ID" || ! "$_AMI_ID" == ami-* ]]; then
+    return 1
+  fi
+  echo "$_AMI_ID"
+  return 0
+}
+
+aws_check_ami_id () {
+  local _id=$1
+  local _AWS_REGION=${2:-"$AWS_REGION"}
+
+  aws ec2 describe-images --region $_AWS_REGION --filters Name=image-id,Values="$_id" Name=state,Values=available 2>&1 1>/dev/null
+  return $?
+}
+
+aws_get_subnet_id () {
+  local _azone=$1
+  local _AWS_REGION=${2:-"$AWS_REGION"}
+  
+  local _id=''
+  if [ -z "$_azone" ]; then
+    _id=$(aws ec2 describe-subnets --region $_AWS_REGION --query 'Subnets[*].SubnetId' --output text)
+  else
+    _id=$(aws ec2 describe-subnets --region $_AWS_REGION --filters Name=availabilityZone,Values=$_azone --query Subnets[*].SubnetId --output text)
+  fi
+
+  if [ -z "$_id" ]; then
+    if [ -z "$_azone" ]; then
+      echo "No subnet found for entire region \"$_AWS_REGION\"" 1>&2
+    else
+      echo "No subnet found for \"$_azone\"" 1>&2
+    fi
+    return 1
+  else
+    echo "$_id"
+    return 0
+  fi
+}
+
+aws_get_iam_role_arn () {
+  local _role=$1
+
+  local _id=$(aws iam list-roles --query 'Roles[*].RoleName' --output text | grep -iwo "$_role")
+
+  if [[ -z "$_id" ]]; then
+    echo "No role found" 1>&2
+    return 1
+  else
+    _id=$(aws iam list-roles --query 'Roles[*].{Name:RoleName,ARN:Arn}' --output text | grep -iw "$_role" | cut -f1)
+    echo "$_id"
+    return 0
+  fi
+}
+
+aws_get_sg_id () {
+  local _sg=$1
+  local _AWS_REGION=${2:-"$AWS_REGION"}
+
+  local _id=$(aws ec2 describe-security-groups --region $_AWS_REGION --filters Name=group-name,Values="$_sg" --query 'SecurityGroups[*].GroupId' --output text)
+
+  if [ -z "$_id" ]; then
+    # if not found by name, let's try to filter by id
+    local _id=$(aws ec2 describe-security-groups --region $_AWS_REGION --filters Name=group-id,Values="$_sg" --query 'SecurityGroups[*].GroupId' --output text)
+    if [ -z "$_id" ]; then
+      echo "No security group found" 1>&2
+      return 1
+    else
+      echo "$_id"
+      return 0
+    fi
+  else
+    echo "$_id"
+    return 0
+  fi
+}
+
+aws_get_key_pair () {
+  local _name=$1
+  local _AWS_REGION=${2:-"$AWS_REGION"}
+
+  _name=$(aws ec2 describe-key-pairs --region $_AWS_REGION --key-names "$_name" --query 'KeyPairs[*].KeyName' --output text)
+
+  if [ -z "$_name" ]; then
+    echo "No key pair found" 1>&2
+    return 1
+  else
+    echo "$_name"
+    return 0
+  fi
+}
+
+aws_get_volume_id () {
+  local _volume=$1
+  local _AWS_REGION=${2:-"$AWS_REGION"}
+
+  local _id=$(aws ec2 describe-volumes --region $_AWS_REGION --filters Name=tag-value,Values="$_volume" --query 'Volumes[*].VolumeId' --output text )
+
+  if [ -z "$_id" ]; then
+    # if not found by name, let's try to filter by id
+    local _id=$(aws ec2 describe-volumes --region $_AWS_REGION --filters Name=volume-id,Values="$_volume" --query 'Volumes[*].VolumeId' --output text)
+    if [ -z "$_id" ]; then
+      echo "No volume found" 1>&2
+      return 1
+    else
+      echo "$_id"
+      return 0
+    fi
+  else
+    echo "$_id"
+    return 0
+  fi
+}
+
+aws_get_volume_state () {
+  local _vol_id=$1
+  local _AWS_REGION=${2:-"$AWS_REGION"}
+
+  local _state=$(aws ec2 describe-volumes --region $_AWS_REGION --filters Name=volume-id,Values="$_vol_id" --query 'Volumes[*].State' --output text )
+  retval=$?
+  if [ $retval -eq 0 ]; then
+    echo "$_state"
+  fi
+  return $retval
+}
+
+aws_get_ec2_id () {
+  local _ec2=$1
+  local _AWS_REGION=${2:-"$AWS_REGION"}
+
+  local _id=($(aws ec2 describe-instances --region $_AWS_REGION --filters Name=tag-value,Values="$_ec2" --query 'Reservations[*].Instances[*].InstanceId' --output text))
+
+  if [ -z "$_id" ]; then
+    # if not found by name, let's try to filter by id
+    local _id=($(aws ec2 describe-instances --region $_AWS_REGION --filters Name=instance-id,Values="$_ec2" --query 'Reservations[*].Instances[*].InstanceId' --output text))
+    if [ -z "$_id" ]; then
+      echo "No EC2 instance found" 1>&2
+      return 1
+    else
+      echo "${_id[*]}"
+      return 0
+    fi
+  else
+    echo "${_id[*]}"
+    return 0
+  fi
+}
+
+aws_get_ec2_state () {
+  local _id=$1
+  local _AWS_REGION=${2:-"$AWS_REGION"}
+
+  local _state=$(aws ec2 describe-instances --region $_AWS_REGION --filters Name=instance-id,Values="$_id" --query 'Reservations[*].Instances[*].State.Name' --output text)
+  retval=$?
+  if [ $retval -eq 0 ]; then
+    echo "$_state"
+  fi
+  return $retval
+}
+
+aws_validate_ec2_tag () {
+  local _ec2=$1
+  local _AWS_REGION=${2:-"$AWS_REGION"}
+
+  local _id=($(aws ec2 describe-instances --region $_AWS_REGION --filters Name=tag-value,Values="$_ec2" Name=instance-state-name,Values='pending,running,stopping,stopped' --query 'Reservations[*].Instances[*].{ID:InstanceId,"-":Tags[?Key==`Name`].Value}' --output text))
+
+  if [ -z "$_id" ]; then
+    return 0
+  else
+    echo "${_id[*]}"
+    return 1
+  fi
+}
+
+aws_get_vpc_id () {
+  local _vpc=$1
+  local _AWS_REGION=${2:-"$AWS_REGION"}
+
+  local _id=$(aws ec2 describe-vpcs --region $_AWS_REGION --filter Name=tag-value,Values="$_vpc" Name=state,Values='available' --query 'Vpcs[*].VpcId' --output text )
+
+  if [ -z "$_id" ]; then
+    # if not found by name, let's try to filter by id
+    local _id=$(aws ec2 describe-vpcs --region $_AWS_REGION --filters Name=vpc-id,Values="$_vpc" Name=state,Values='available' --query 'Vpcs[*].VpcId' --output text)
+    if [ -z "$_id" ]; then
+      echo "No VPC found" 1>&2
+      return 1
+    else
+      echo "$_id"
+      return 0
+    fi
+  else
+    echo "$_id"
+    return 0
+  fi
+}
+

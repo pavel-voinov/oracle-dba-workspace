@@ -1,0 +1,3 @@
+#!/bin/sh
+#echo -n "Get DDL from database and pretty it..."
+sed -r 's/(\"[^\"]+\")/\L\1/g;s/(^\s*)|(\")//g;s/^;$/\//g;s/\t/  /g' | grep -v '^\s*$'

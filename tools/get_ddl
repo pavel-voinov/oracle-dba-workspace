@@ -1,0 +1,218 @@
+#!/bin/bash
+#
+#
+CONN=$1
+if [ $# -lt 2 ] ; then
+    echo "Usage: $0 <full connect string> <object_type> [<[object_owner.]object_name>] [output filename]"
+    exit 2
+fi
+
+if [ -x "$ORACLE_HOME/bin/sqlplus" ]; then 
+  SQLPLUS="$ORACLE_HOME/bin/sqlplus -L -S"
+else
+  echo "SQL*Plus command is not found"
+  exit 99
+fi
+
+OBJ_TYPE=`echo $2 | tr 'a-z_' 'A-Z '`
+if [ "$OBJ_TYPE" = 'FUNCTIONAL_INDEX' ]; then
+  OBJ_TYPE=INDEX
+  IND_TYPE='FUNCTION-BASED NORMAL'
+elif [ "$OBJ_TYPE" = 'INDEX' ]; then
+  IND_TYPE='NORMAL'
+elif [ "$OBJ_TYPE" = 'MVIEW' ]; then
+  OBJ_TYPE='MATERIALIZED VIEW'
+elif [ "$OBJ_TYPE" = 'MVIEW_LOG' ]; then
+  OBJ_TYPE='MATERIALIZED VIEW LOG'
+elif [ "$OBJ_TYPE" = 'DBLINK' ]; then
+  OBJ_TYPE='DB LINK'
+fi
+OBJ_NAME=`echo $3 | tr '[:lower:]' '[:upper:]'`
+OBJ_OWNER=${OBJ_NAME%.*}
+if [ "$OBJ_OWNER" = "$OBJ_NAME" ]; then
+  unset OBJ_OWNER
+else
+  OBJ_NAME=${OBJ_NAME##*.}
+fi
+
+SINGLE_OUTPUT_FILE=$4
+
+TMP=`echo $CONN | cut -s -d"@" -f 1`
+DBCONN=`echo $1 | cut -s -d"@" -f 2`
+DBUSER=`echo $TMP | cut -d "/" -f 1`
+DBPASS=`echo $TMP | cut -s -d "/" -f 2`
+
+echo "$TMP" | grep -q -E '\/$'; retval=$?
+if [[ -z "$DBPASS" && -n "$DBUSER" && ! $retval -eq 0 ]]; then
+  read -s -p "Enter password for $DBUSER@$DBCONN: " DBPASS
+  echo
+fi
+
+DBCONNECT="$DBUSER/$DBPASS@$DBCONN"
+
+do_get_ddl() {
+  if [ -z "$SINGLE_OUTPUT_FILE" ]; then
+    TMP=`echo $2 | sed -r 's/\"//g'`
+    if [ "$OBJ_TYPE" = 'DB LINK' ]; then
+      TMP=`echo $TMP | sed 's/\./_/2gp'`
+    fi
+    SQL_FILE=( $( $SQLPLUS $DBCONNECT <<EOFSQL
+set serveroutput on size unlimited heading off timing off feedback off echo off verify off newpage none scan off linesize 4000 pagesize 9999 termout on trimspool on
+whenever sqlerror exit
+SELECT replace(lower('${TMP##*.}'), '\$', '_') || decode('$1', 'TYPE_BODY', '.body', '') || '.' || decode('$1', 'PACKAGE_SPEC', 'pks', 'PACKAGE_BODY', 'pkb', 'MATERIALIZED VIEW LOG', 'mvlog.sql', 'sql')
+FROM dual
+/
+exit
+EOFSQL
+) )
+    if [ -f "$SQL_FILE" ]; then
+      rm -f "$SQL_FILE"
+    fi
+  else
+    SQL_FILE=$SINGLE_OUTPUT_FILE
+  fi
+
+  if [ "x$1" = 'xUSER' ]; then
+    $SQLPLUS $DBCONNECT @get_user_ddl.sql \'$2\' "$SQL_FILE"
+  elif [ "x$1" = 'xROLE' ]; then
+    $SQLPLUS $DBCONNECT @get_role_ddl.sql \'$2\' "$SQL_FILE"
+  elif [ "x$1" = 'xDB LINK' ]; then
+    $SQLPLUS $DBCONNECT @get_db_link_ddl.sql \'$2\' "$SQL_FILE"
+  elif [ "x$1" = 'xREFRESH GROUP' ]; then
+    $SQLPLUS $DBCONNECT @get_refresh_group_ddl.sql \'$2\' "$SQL_FILE"
+  elif [ "x$1" = 'xMATERIALIZED VIEW LOG' ]; then
+    $SQLPLUS $DBCONNECT @get_dependent_ddl.sql "$1" \'$2\' "$SQL_FILE"
+  else
+    $SQLPLUS $DBCONNECT @get_ddl.sql "$1" \'$2\' "$SQL_FILE"
+  fi
+  if [ -f $SQL_FILE ]; then
+    if [[ "x$1" = 'xTABLE' || "x$1" = 'xVIEW' || "x$1" = 'xMATERIALIZED VIEW' || "x$1" = 'xINDEX' ]]; then
+      # remove leading and trailing spaces, empty lines
+      sed -i -re 's/(^\s*)//g;s/^;$/\//g;s/\t/  /g;/^\s*$/ d' $SQL_FILE
+    fi
+    # remove empty lines at the end of files
+    sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' $SQL_FILE
+  fi
+}
+
+if [ "x$OBJ_TYPE" = 'xROLE' ]; then
+  DBOBJECTS=( $( $SQLPLUS "$DBCONNECT" <<EOFSQL
+set serveroutput on size unlimited heading off timing off feedback off echo off verify off newpage none scan off linesize 4000 pagesize 9999 termout on trimspool on
+whenever sqlerror exit
+SELECT role
+FROM dba_roles
+WHERE role like nvl('$OBJ_NAME', '%')
+ORDER BY 1
+/
+exit
+EOFSQL
+) )
+  EXIT_CODE=$?
+elif [ "x$OBJ_TYPE" = 'xUSER' ]; then
+  DBOBJECTS=( $( $SQLPLUS "$DBCONNECT" <<EOFSQL
+set serveroutput on size unlimited heading off timing off feedback off echo off verify off newpage none scan off linesize 4000 pagesize 9999 termout on trimspool on
+whenever sqlerror exit
+SELECT username
+FROM dba_users
+WHERE username like nvl('$OBJ_NAME', '%')
+  AND not regexp_like(username, '^SYS(|TEM)$')
+ORDER BY 1
+/
+exit
+EOFSQL
+) )
+  EXIT_CODE=$?
+elif [ "x$OBJ_TYPE" = 'xDB LINK' ]; then
+  DBOBJECTS=( $( $SQLPLUS "$DBCONNECT" <<EOFSQL
+set serveroutput on size unlimited heading off timing off feedback off echo off verify off newpage none scan off linesize 4000 pagesize 9999 termout on trimspool on
+whenever sqlerror exit
+SELECT '"' || owner || '"."' || db_link || '"'
+FROM all_db_links
+WHERE owner = nvl('$OBJ_OWNER', sys_context('USERENV', 'CURRENT_SCHEMA'))
+  AND owner <> 'PUBLIC' 
+  AND db_link like nvl('$OBJ_NAME', '%')
+ORDER BY 1
+/
+exit
+EOFSQL
+) )
+  EXIT_CODE=$?
+elif [ "x$OBJ_TYPE" = 'xMATERIALIZED VIEW LOG' ]; then
+  DBOBJECTS=( $( $SQLPLUS "$DBCONNECT" <<EOFSQL
+set serveroutput on size unlimited heading off timing off feedback off echo off verify off newpage none scan off linesize 4000 pagesize 9999 termout on trimspool on
+whenever sqlerror exit
+SELECT DISTINCT '"' || log_owner || '"."' || master || '"'
+FROM all_mview_logs
+WHERE log_owner = nvl('$OBJ_OWNER', sys_context('USERENV', 'CURRENT_SCHEMA'))
+  AND master like nvl('$OBJ_NAME', '%')
+ORDER BY 1
+/
+exit
+EOFSQL
+) )
+  EXIT_CODE=$?
+elif [ "x$OBJ_TYPE" = 'xREFRESH GROUP' ]; then
+  DBOBJECTS=( $( $SQLPLUS "$DBCONNECT" <<EOFSQL
+set serveroutput on size unlimited heading off timing off feedback off echo off verify off newpage none scan off linesize 4000 pagesize 9999 termout on trimspool on
+whenever sqlerror exit
+SELECT DISTINCT '"' || rowner || '"."' || rname || '"'
+FROM all_refresh
+WHERE rowner = nvl('$OBJ_OWNER', sys_context('USERENV', 'CURRENT_SCHEMA'))
+  AND rname like nvl('$OBJ_NAME', '%')
+ORDER BY 1
+/
+exit
+EOFSQL
+) )
+  EXIT_CODE=$?
+else
+  DBOBJECTS=( $( $SQLPLUS "$DBCONNECT" <<EOFSQL
+set serveroutput on size unlimited heading off timing off feedback off echo on verify off newpage none scan off linesize 4000 pagesize 9999 termout on trimspool on
+whenever sqlerror exit
+SELECT '"' || o.owner || '"."' || o.object_name || '"'
+FROM all_objects o
+WHERE o.owner = nvl('$OBJ_OWNER', sys_context('USERENV', 'CURRENT_SCHEMA'))
+  AND o.object_type = '$OBJ_TYPE'
+  AND o.object_name like nvl('$OBJ_NAME', '%')
+--  AND (o.object_type <> 'SYNONYM' OR exists (SELECT 1 FROM all_synonyms s WHERE s.owner = o.owner AND s.table_owner = s.owner AND s.synonym_name = o.object_name))
+  AND o.secondary = 'N'
+  AND o.generated = 'N'
+  AND NOT regexp_like(o.object_name, 'SYS_PLSQL_[[:digit:]_]*')
+  AND ('$IND_TYPE' is null
+       OR exists (SELECT null FROM all_indexes
+                  WHERE owner = o.owner AND index_type = '$IND_TYPE' AND index_name = o.object_name))
+ORDER BY 1
+/
+exit
+EOFSQL
+) )
+  EXIT_CODE=$?
+fi
+
+if [ $EXIT_CODE != 0 ]; then
+  echo "Error during connection has occured"
+  exit $EXIT_CODE
+fi
+
+if [ "${#DBOBJECTS[@]}" -eq 0 ]; then
+  echo "Objects are not found"
+  exit 1
+else
+  if ( [ -n "$SQL_FILE" ] && [ -f "$SQL_FILE" ] ) then
+    rm -f "$SQL_FILE"
+  fi
+fi
+for OBJ_NAME in "${DBOBJECTS[@]}" ; do
+  if [ "x$OBJ_TYPE" = 'xPACKAGE' ]; then
+    do_get_ddl PACKAGE_SPEC "$OBJ_NAME"
+    do_get_ddl PACKAGE_BODY "$OBJ_NAME"
+  elif [ "x$OBJ_TYPE" = 'xTYPE' ]; then
+    do_get_ddl TYPE_SPEC "$OBJ_NAME"
+    do_get_ddl TYPE_BODY "$OBJ_NAME"
+  else
+    do_get_ddl "$OBJ_TYPE" "$OBJ_NAME"
+  fi
+done
+
+unset TMP OBJ_TYPE OBJ_NAME OBJ_OWNER DBCONN DBUSER DBPASS DBCONNECT IND_TYPE EXIT_CODE
+

@@ -1,0 +1,17 @@
+/etc/sysconfig/oracleasm
+/etc/sysconfig/o2cb
+/etc/sysconfig/network/config
+/etc/sysconfig/network/routes
+/etc/sysconfig/network/ifcfg-eth-id-*
+/etc/sysconfig/network/config*
+/etc/ocfs2/cluster.conf
+/etc/passwd
+/etc/oratab
+/etc/group
+/etc/pam.d/login
+/etc/hosts
+/etc/security/limits.conf
+/etc/fstab
+/u01/app/oracle/product/db/11.2*/network/admin/*.ora
+/u01/app/oragrid/11.2*/network/admin/*.ora
+/u01/app/grid/11.2*/network/admin/*.ora

@@ -1,0 +1,10 @@
+#!/bin/bash
+#
+# Script to generate random passwords with specific chars
+#
+genpasswd() {
+  local l=${1:-16}
+  LC_ALL=C head /dev/urandom | tr -dc 'A-Za-z0-9_.#%~' | head -c${l} | xargs
+}
+
+genpasswd $1

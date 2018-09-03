@@ -1,0 +1,49 @@
+[ -f ~/.workspace ] && . ~/.workspace
+
+check_db_connection() {
+  local db=`basename $1`
+  local CONN=`echo ${2:-"/@$db"} | tr '.' '-'`
+  grep -qi "^$db" $INVENTORY_DIR/db_maintenance.txt 2>/dev/null
+  if [ $? -eq 0 ]; then
+    echo "Database \"$db\" is in Maintenance Mode" >&2
+    retval=99
+  else
+    OUTPUT=`$ORACLE_HOME/bin/sqlplus -L -S $CONN <<EOFSQL
+exit
+EOFSQL
+`
+    retval=$?
+    if [ $retval -eq 0 ]; then
+      echo "$OUTPUT" | grep -qi 'error' 2>/dev/null
+      retval=$?
+      if [ $retval -eq 0 ]; then
+        echo "$OUTPUT" >&2
+        retval=2
+      else
+        retval=0
+      fi
+    fi
+  fi
+  if [ $retval -ne 0 ]; then
+    echo "Connection to \"$CONN\" failed" >&2
+  fi
+  return $retval
+}
+
+convert_tns_to_jdbc () {
+  local TNSALIAS=$1
+
+  CONN=`tnsping $TNSALIAS | egrep -o '\(DESCRIPTION=.*\)$'`
+  if [[ $? -eq 0 ]]; then
+    local H=`echo $CONN | egrep -o '\(HOST=[^\)]+\)' | sed -r 's/(^\(HOST=|\)$)//g'`
+    local P=`echo $CONN | egrep -o '\(PORT=[^\)]+\)' | sed -r 's/(^\(PORT=|\)$)//g'`
+    local S=`echo $CONN | egrep -o '\((SERVICE_NAME|SID)=[^\)]+\)' | sed -r 's/(^\((SERVICE_NAME|SID)=|\)$)//g'`
+  else
+    echo "TNS Alias $TNSALIAS cannot be resolved"
+    return 1
+  fi
+
+  echo "jdbc:oracle:thin:@//$H:$P/$S"
+  return 0
+}
+

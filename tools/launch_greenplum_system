@@ -1,0 +1,463 @@
+#!/bin/bash
+# DO NOT EXTEND THIS SCRIPT - IT IS MIGRATING INTO PYTHON VERSION AT THE MOMENT
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Default variables
+BUILD_HOST=build.oneplatform.build
+CLOUD_APP=Greenplum
+CLOUD_ENV=dev
+CLOUD_DOMAIN=dev.cc.oneplatform.build
+fuserdata=$$.userdata
+wait_seconds=600
+
+# AWS
+# TODO: get region from current AWS account defaults
+export AWS_REGION=us-west-2
+MASTER_AMI=greenplum-master
+SEGMENT_AMI=greenplum
+AWS_VPC=tr_cc_dev_vpc_02-new
+AWS_KEY_PAIR=newsql_charter
+AWS_ZONE_CHAR=a
+AWS_SG_NAME=infra_greenplum
+AWS_IAM_ROLE=cc_greenplum_ec2
+AWS_MASTER_INSTANCE_TYPE=m4.4xlarge
+AWS_SEGMENT_INSTANCE_TYPE=r3.4xlarge
+AWS_VOL_TYPE=io1
+AWS_IOPS=3000
+
+# Greenplum
+SEGMENTS_COUNT=4
+MASTERS_COUNT=1
+DB_PORT=5432
+DB_NAME=ips
+DB_USER=dbadmin
+DB_SIZE=100
+GP_USER=gpadmin
+
+show_usage () {
+  tabs 44
+  echo -e "Usage: $0
+  [-h, --help]\tshow current usage information
+  -t, --tag STRING\tTag name for Greenplum cluster. Tag has to be unique for AWS account
+  [--vpc STRING\tVPC for EC2 instances. Default is \"$AWS_VPC\"]
+  [--security-group STRING\tSecurity group for EC2 instances. Default is \"$AWS_SG_NAME\"]
+  [--key-pair STRING\tKey pair name for EC2 instances. Default is \"${AWS_TAG}_key\"]
+  [--aws-region STRING]\tAWS region for EC2 instances. Default is \"$AWS_REGION\"
+  [--aws-zone STRING]\tAWS availability zone EC2 instances (a, b or c). Default is \"$AWS_ZONE_CHAR\"
+  [--iam-role STRING\tIAM role for EC2 instances. Default is \"$AWS_IAM_ROLE\"]
+  [--master-ami-id STRING]\tAWS AMI ID for master hosts. Default is latest for \"$MASTER_AMI\" name
+  [--segment-ami-id STRING]\tAWS AMI ID for segment hosts. Default is latest for \"$SEGMENT_AMI\" name
+  [--master-instance-type STRING]\tAWS EC2 instance type to use for master hosts. Default is \"$AWS_MASTER_INSTANCE_TYPE\"
+  [--segment-instance-type STRING]\tAWS EC2 instance type to use for segment hosts. Default is \"$AWS_SEGMENT_INSTANCE_TYPE\"
+  [-s, --segments-count NUMBER]\tNumber of segment hosts. Default is $SEGMENTS_COUNT
+  [-m, --masters-count NUMBER]\tNumber of master hosts (primary and slaves). Default is $MASTERS_COUNT
+  [-e, --env STRING]\tEnvironment template. Default is \"$CLOUD_ENV\"
+  [--create-mirrors]\tSegment mirrors will be created if flag is set. Segment mirrors will be created by default for PROD environment only
+  [-u, --username STRING]\tOS username for Greenplum software and data owner. Default is \"$GP_USER\"
+  [--db-user STRING]\tName of admin database user on PostgreSQL instances on segments hosts. Default is \"$DB_USER\"
+  [-d, --db-name STRING]\tName of database on PostgreSQL instances on segments hosts. Default is \"$DB_NAME\"
+  [-p, --db-port NUMBER]\tTCP port number for PosrgreSQL instances on segments hosts. Default is $DB_PORT
+  [--db-size NUMBER]\tSize of database in GB. Default is $DB_SIZE
+  [--dry-run]\tGenerate configuration and show commands to be executed only
+\n"
+}
+
+# ETCD
+ETCD_PEERS='http://build01.etcd.oneplatform.build:2379,http://build02.etcd.oneplatform.build:2379,http://build03.etcd.oneplatform.build:2379'
+
+ARGS=`getopt -n launch_greenplum_system -o ht:s::m::e::u::d::p:: -l help,tag:,segments-count::,masters-count::,env::,create-mirrors,username::,db-user::,db-name::,db-port::,db-size::,vpc::,security-group::,aws-region::,aws-zone::,key-pair::,master-ami-id::,segment-ami-id::,master-instance-type::,segment-instance-type::,dry-run -- "$@"`
+retval=$?
+if [ $retval -eq 0 ]; then
+  echo "$ARGS" | egrep -q -v '^\s*--$'
+  retval=$?
+  if [ $retval -ne 0 ]; then
+    echo "$0: ffailed parsing option $ARGS" >&2
+  fi
+fi
+if [ $retval -ne 0 ]; then
+  show_usage
+  exit $retval
+fi
+eval set -- "$ARGS"
+
+# extract options and their arguments into variables.
+while true ; do
+  case "$1" in
+    -h|--help) show_usage; exit 0 ;;
+    -t|--tag)
+      case "$2" in
+        "") shift 2 ;;
+         *) AWS_TAG=`echo "$2" | tr '[:upper:]' '[:lower:]' | tr ' ' '_'`; shift 2 ;;
+      esac ;;
+    --vpc)
+      case "$2" in
+        "") shift 2 ;;
+         *) AWS_VPC_ID="$2" ; shift 2 ;;
+      esac ;;
+    --security-group)
+      case "$2" in
+        "") shift 2 ;;
+         *) AWS_SG_ID="$2" ; shift 2 ;;
+      esac ;;
+    --key-pair)
+      case "$2" in
+        "") shift 2 ;;
+         *) AWS_KEY_PAIR="$2" ; shift 2 ;;
+      esac ;;
+    --aws-region)
+      case "$2" in
+        "") shift 2 ;;
+         *) AWS_REGION="$2" ; shift 2 ;;
+      esac ;;
+    --aws-zone)
+      case "$2" in
+        "") shift 2 ;;
+         *) AWS_ZONE_CHAR=`echo "$2" | tr '[:upper:]' '[:lower:]'`; shift 2 ;;
+      esac ;;
+    --master-ami-id)
+      case "$2" in
+        "") shift 2 ;;
+         *) MASTER_AMI_ID=`echo "$2" | tr '[:upper:]' '[:lower:]'`; shift 2 ;;
+      esac ;;
+    --segment-ami-id)
+      case "$2" in
+        "") shift 2 ;;
+         *) SEGMENT_AMI_ID=`echo "$2" | tr '[:upper:]' '[:lower:]'`; shift 2 ;;
+      esac ;;
+    -s|--segments-count)
+      case "$2" in
+        "") shift 2 ;;
+         *) SEGMENTS_COUNT=$2; shift 2 ;;
+      esac ;;
+    -m|--masters-count)
+      case "$2" in
+        "") shift 2 ;;
+         *) MASTERS_COUNT=$2; shift 2 ;;
+      esac ;;
+    -p|--db-port)
+      case "$2" in
+        "") shift 2 ;;
+         *) DB_PORT=$2; shift 2 ;;
+      esac ;;
+    -d|--db-name)
+      case "$2" in
+        "") shift 2 ;;
+         *) DB_NAME="$2"; shift 2 ;;
+      esac ;;
+    --db-user)
+      case "$2" in
+        "") shift 2 ;;
+         *) DB_USER="$2"; shift 2 ;;
+      esac ;;
+    --db-size)
+      case "$2" in
+        "") shift 2 ;;
+         *) DB_SIZE=$2; shift 2 ;;
+      esac ;;
+    -u|--username)
+      case "$2" in
+        "") shift 2 ;;
+         *) GP_USER="$2"; shift 2 ;;
+      esac ;;
+    -e|--env)
+      case "$2" in
+        "") shift 2 ;;
+         *) CLOUD_ENV=`echo "$2" | tr '[:upper:]' '[:lower:]'` ; shift 2 ;;
+      esac ;;
+    --create-mirrors)
+      case "$2" in
+        "") shift ;;
+         *) GP_CREATE_MIRRORS='Y' ; shift ;;
+      esac ;;
+    --dry-run)
+      case "$2" in
+        "") shift ;;
+         *) DRY_RUN='Y' ; shift ;;
+      esac ;;
+    --) shift ; break ;;
+     *) echo 'Unsupported parameter'; show_usage; exit 99 ;;
+  esac
+done
+
+if [ -z "$AWS_TAG" ]; then
+  echo 'System tag must be specified'
+  exit 99
+fi
+
+if [ -z "$AWS_KEY_PAIR" ]; then
+  AWS_KEY_PAIR="${AWS_TAG}_key"
+fi
+
+AWS_ZONE="${AWS_REGION}$AWS_ZONE_CHAR"
+
+if [ -f $DIR/launch_functions ]; then
+  . $DIR/launch_functions
+else
+  echo "\"$DIR/launch_functions\" script is not found"
+  exit 2
+fi
+
+# check if Greenplum cluster with requested tag already exists
+tmp=($( aws_validate_ec2_tag "$AWS_TAG" )); retval=$?
+if [ $retval -ne 0 ]; then
+  echo "Greenplum cluster with name \"$AWS_TAG\" already exists on instances: ${tmp[*]}" 1>&2
+  exit 99
+fi
+
+echo
+echo 'Verify Greenplum master hosts AMI...'
+if [ -z "$MASTER_AMI_ID" ]; then
+  MASTER_AMI_ID=$( aws_get_latest_ami_id $MASTER_AMI $AMI_BASE_RELEASE ); retval=$?
+  if [ $retval -eq 0 ]; then
+    echo "Master hosts AMI: $MASTER_AMI_ID"
+  else
+    echo "Master hosts AMI not found" 1>&2
+    exit $retval
+  fi
+else
+  aws_check_ami_id $SEGMENT_AMI_ID; retval=$?
+  if [ $retval -eq 0 ]; then
+    echo "Master hosts AMI: $MASTER_AMI_ID"
+  else
+    echo "Master hosts AMI $MASTER_AMI_ID not found" 1>&2
+    exit $retval
+  fi
+fi
+
+echo
+echo 'Verify Greenplum segment hosts AMI...'
+if [ -z "$SEGMENT_AMI_ID" ]; then
+  SEGMENT_AMI_ID=$( aws_get_latest_ami_id $SEGMENT_AMI $AMI_BASE_RELEASE ); retval=$?
+  if [ $retval -eq 0 ]; then
+    echo "Segment hosts AMI: $SEGMENT_AMI_ID"
+  else
+    echo "Segment hosts AMI not found" 1>&2
+    exit $retval
+  fi
+else
+  aws_check_ami_id $SEGMENT_AMI_ID; retval=$?
+  if [ $retval -eq 0 ]; then
+    echo "Segment hosts AMI: $SEGMENT_AMI_ID"
+  else
+    echo "Segment hosts AMI $SEGMENT_AMI_ID not found" 1>&2
+    exit $retval
+  fi
+fi
+
+echo
+echo 'Verify basic AWS parameters...'
+vpc_id=$( aws_get_vpc_id $AWS_VPC ); retval=$?
+if [ $retval -eq 0 ]; then
+  echo "VPC \"$AWS_VPC\" found with ID: $vpc_id"
+else
+  echo "VPC \"$AWS_VPC\" not found"
+  exit $retval
+fi
+
+subnets=($( aws_get_subnet_id $AWS_ZONE )); retval=$?
+if [ $retval -eq 0 ]; then
+  subnet_id=${subnets[0]}
+  echo "Found subnet(s) in \"$AWS_ZONE\": $subnet_id"
+else
+  echo "Subnet not found"
+  exit $retval
+fi
+
+iam_role_arn=$( aws_get_iam_role_arn $AWS_IAM_ROLE ); retval=$?
+if [ $retval -eq 0 ]; then
+  echo "IAM role \"$AWS_IAM_ROLE\" found with ARN: $iam_role_arn"
+else
+  echo "IAM role \"$AWS_IAM_ROLE\" not found"
+  exit $retval
+fi
+
+sg_id=$( aws_get_sg_id $AWS_SG_NAME ); retval=$?
+if [ $retval -eq 0 ]; then
+  echo "Security group \"$AWS_SG_NAME\" found with ID: $sg_id"
+else
+  echo "Security group \"$AWS_SG_NAME\" not found"
+  exit $retval
+fi
+
+key_pair=$( aws_get_key_pair $AWS_KEY_PAIR ); retval=$?
+if [ $retval -eq 0 ]; then
+  echo "Key pair \"$AWS_KEY_PAIR\" found"
+else
+  echo "Key pair \"$AWS_KEY_PAIR\" not found"
+  exit $retval
+fi
+
+echo
+echo 'Create volumes for all segment hosts...'
+for i in `seq 1 $SEGMENTS_COUNT`; do
+  vol_name="vol-$AWS_TAG-$i"
+  vol_id=$( aws_get_volume_id "$vol_name" 2>/dev/null )
+  if [ $? -eq 0 ]; then
+    echo "Volume \"$vol_name\" already exists with ID: $vol_id"
+  else
+    tmp=$( aws ec2 create-volume --region $AWS_REGION --size $DB_SIZE --availability-zone $AWS_ZONE --volume-type $AWS_VOL_TYPE --iops $AWS_IOPS )
+    if [ $? -eq 0 ]; then
+      vol_id=$( echo "$tmp" | python -c "import sys, json; print json.load(sys.stdin)['VolumeId']" )
+      echo "New volume \"$vol_name\" is being created with ID: $vol_id"
+      aws ec2 create-tags --region $AWS_REGION --resources "$vol_id" --tags Key=Name,Value="$vol_name" Key=ClusterName,Value="$AWS_TAG"
+
+      elapsed=0
+      state=$( aws_get_volume_state $vol_id )
+      date1=$(date +"%s")
+      if [ "$state" == 'available' ]; then
+        flag=0
+      else
+        flag=1
+        echo 'Waiting for "available" state of volume...'
+      fi
+      while [[ $elapsed -le $wait_seconds && $flag -ne 0 ]]; do
+        date -u -d "0 $elapsed seconds" +"%H:%M:%S"
+        sleep 5
+        state=$( aws_get_volume_state $vol_id )
+        [ "$state" == 'available' ] && flag=0
+        date2=$(date +"%s")
+        elapsed=$(($date2-$date1))
+      done
+
+      if [ $elapsed -ge $wait_seconds ]; then
+        echo "Timeout of $wait_seconds seconds exceeded in wating for \"available\" state of volume"
+        exit 99
+      else
+        echo "Volume is available now after $(date -u -d "0 $elapsed seconds" +"%H:%M:%S")."
+      fi
+    else
+      echo "Volume \"$vol_name\" not created" 1>&2
+      exit 99
+    fi
+  fi
+done
+
+greenplum_hostsfile=`mktemp`
+echo "# Master hosts for Greenplum cluster $AWS_TAG" >> $greenplum_hostsfile
+
+echo
+echo 'Launch master host(s)...'
+for i in `seq 1 $MASTERS_COUNT`; do
+  ec2_tag="$AWS_TAG-master-$i"
+  tmpfile=`mktemp`
+  aws ec2 run-instances --region $AWS_REGION --image-id $MASTER_AMI_ID --instance-type $AWS_MASTER_INSTANCE_TYPE \
+    --security-group-ids $sg_id --subnet-id $subnet_id --key-name $key_pair \
+    --iam-instance-profile Name=$AWS_IAM_ROLE --associate-public-ip-address > $tmpfile
+  retval=$?
+  if [ $retval -eq 0 ]; then
+    ec2_id=$( cat $tmpfile | python -c "import sys, json; print json.load(sys.stdin)['Instances'][0]['InstanceId']" )
+    ec2_ip=$( cat $tmpfile | python -c "import sys, json; print json.load(sys.stdin)['Instances'][0]['PrivateIpAddress']" )
+    rm $tmpfile
+    echo "Instance \"$ec2_tag\" created: ID=$ec2_id, IP=$ec2_ip"
+    aws ec2 create-tags --region $AWS_REGION --resources $ec2_id --tags Key=Name,Value="$ec2_tag" Key=ClusterName,Value="$AWS_TAG" Key=ClusterRole,Value=master
+
+    elapsed=0
+    state=$( aws_get_ec2_state $ec2_id )
+    date1=$(date +"%s")
+    if [ "$state" == 'running' ]; then
+      flag=0
+    else
+      flag=1
+      echo 'Waiting for "running" state of instance...'
+    fi
+    while [[ $elapsed -le $wait_seconds && $flag -ne 0 ]]; do
+      date -u -d "0 $elapsed seconds" +"%H:%M:%S"
+      sleep 5
+      state=$( aws_get_ec2_state $ec2_id )
+      [ "$state" == 'running' ] && flag=0
+      date2=$(date +"%s")
+      elapsed=$(($date2-$date1))
+    done
+
+    if [ $elapsed -ge $wait_seconds ]; then
+      echo "Timeout of $wait_seconds seconds exceeded in wating for \"running\" status"
+      exit 99
+    fi
+
+    echo "Instance is running now after $(date -u -d "0 $elapsed seconds" +"%H:%M:%S")."
+    echo -e "$ec2_ip\t$ec2_tag" >> $greenplum_hostsfile
+  else
+    echo "Instance was not created" 1>&2
+    exit $retval
+  fi
+done
+
+echo "# Segment hosts for Greenplum cluster $AWS_TAG" >> $greenplum_hostsfile
+echo
+echo 'Launch segment host(s)...'
+for i in `seq 1 $SEGMENTS_COUNT`; do
+  ec2_tag="$AWS_TAG-segment-$i"
+  tmpfile=`mktemp`
+  aws ec2 run-instances --region $AWS_REGION --image-id $SEGMENT_AMI_ID --instance-type $AWS_SEGMENT_INSTANCE_TYPE \
+    --security-group-ids $sg_id --subnet-id $subnet_id --key-name $key_pair --ebs-optimized \
+    --iam-instance-profile Name=$AWS_IAM_ROLE --associate-public-ip-address > $tmpfile
+#--disable-api-termination
+  retval=$?
+  if [ $retval -eq 0 ]; then
+    ec2_id=$( cat $tmpfile | python -c "import sys, json; print json.load(sys.stdin)['Instances'][0]['InstanceId']" )
+    ec2_ip=$( cat $tmpfile | python -c "import sys, json; print json.load(sys.stdin)['Instances'][0]['PrivateIpAddress']" )
+    rm $tmpfile
+    echo "Instance \"$ec2_tag\" created: ID=$ec2_id, IP=$ec2_ip"
+    aws ec2 create-tags --region $AWS_REGION --resources $ec2_id --tags Key=Name,Value="$ec2_tag" Key=ClusterName,Value="$AWS_TAG" Key=ClusterRole,Value=segment
+
+    elapsed=0
+    state=$( aws_get_ec2_state $ec2_id )
+    date1=$(date +"%s")
+    if [ "$state" == 'running' ]; then
+      flag=0
+    else
+      flag=1
+      echo 'Waiting for "running" state of instance...'
+    fi
+    while [[ $elapsed -le $wait_seconds && $flag -ne 0 ]]; do
+      date -u -d "0 $elapsed seconds" +"%H:%M:%S"
+      sleep 5
+      state=$( aws_get_ec2_state $ec2_id )
+      [ "$state" == 'running' ] && flag=0
+      date2=$(date +"%s")
+      elapsed=$(($date2-$date1))
+    done
+
+    if [ $elapsed -ge $wait_seconds ]; then
+      echo "Timeout of $wait_seconds seconds exceeded in wating for \"running\" status"
+      exit 99
+    fi
+
+    echo "Instance is running now after $(date -u -d "0 $elapsed seconds" +"%H:%M:%S")."
+    echo -e "$ec2_ip\t$ec2_tag" >> $greenplum_hostsfile
+  else
+    echo "Instance was not created" 1>&2
+    exit $retval
+  fi
+
+  vol_name="vol-$AWS_TAG-$i"
+  vol_id=$( aws_get_volume_id "$vol_name" 2>/dev/null )
+  if [ $? -eq 0 ]; then
+    aws ec2 attach-volume --region $AWS_REGION --volume-id $vol_id --instance-id $ec2_id --device /dev/xvdb >/dev/null
+    if [ $? -eq 0 ]; then
+      echo "Volume \"$vol_id\" attached to the instance \"$ec2_id\" as /dev/xvdb"
+    else
+      echo "Volume \"$vol_id\" cannot be attached to the instance \"$ec2_id\""
+      exit 2
+    fi
+  else
+    echo "Volume \"$vol_name\" cannot be found at this stage"
+    exit 2
+  fi
+done
+
+# Create userdata
+cat > $fuserdata << EOF
+CLUSTER_NAME=$AWS_TAG
+EOF
+
+echo
+echo "Generated hosts as part of \"$AWS_TAG\" Greenplum cluster:"
+cat $greenplum_hostsfile
+
+# Test for ansible calls
+pwd
+for h in `grep '\-segment-' $greenplum_hostsfile | cut -f1`; do
+  echo "ansible $h greenplum-segment.yml --tags=init"
+done

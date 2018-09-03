@@ -1,0 +1,17 @@
+#!/bin/sh
+
+ORAENV_ASK=NO
+ORACLE_SID=${1:-"orcl"}
+. oraenv
+
+#$ORACLE_HOME/bin/emctl stop dbconsole
+
+
+$ORACLE_HOME/bin/sqlplus /nolog <<EOF
+connect / as sysdba
+shutdown immediate
+EOF
+
+$ORACLE_HOME/bin/lsnrctl stop
+
+unset ORAENV_ASK

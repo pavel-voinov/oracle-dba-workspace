@@ -1,0 +1,23 @@
+#!/bin/bash
+
+SCRIPTS_HOME=`dirname $0`
+
+if [ "$SCRIPTS_HOME" = "." ]; then
+    SCRIPTS_HOME=`pwd`;
+fi
+
+MODE=`echo $1 | tr '[:lower:]' '[:upper:]'`
+
+. ${SCRIPTS_HOME}/dba_functions
+
+export ORACLE_HOME=${3:-"$ORACLE_HOME"}
+export LD_LIBRARY_PATH=$ORACLE_HOME/lib:$LD_LIBRARY_PATH:$ORACLE_HOME/ctx/lib
+
+init_oraenv $2 $3
+
+pushd ${SCRIPTS_HOME} &>/dev/null
+
+SQLPLUS="${ORACLE_HOME}/bin/sqlplus"
+
+
+$SQLPLUS -S "/ as sysdba" @create_pfile.sql
