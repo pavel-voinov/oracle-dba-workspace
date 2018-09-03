@@ -1,7 +1,7 @@
 # oracle-dba-workspace
 Scripts and tools needed for Oracle DBA
 
-## SQL scripts
+## SQL scripts (simply "scripts")
 
 [SQL scripts](scripts) provide helpful reports and scripts useful for
 day-to-day activity of DBAs:
@@ -10,9 +10,9 @@ day-to-day activity of DBAs:
 
 Please, refer to [README](scripts/README.md) for more details.
 
-## Shell scripts
+## Shell scripts (simply "tools")
 
-(Shell scripts)[tools] provide automation for day-to-day activity of DBAs and
+[Shell scripts](tools) provide automation for day-to-day activity of DBAs and
 in the most cases helps to run different SQL scripts according to parameters
 passed to the shell script.
 
