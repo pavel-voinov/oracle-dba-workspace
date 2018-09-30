@@ -1,0 +1,18 @@
+#!/bin/bash
+
+GIT_DIRS=( $(find "$HOME"/git/ -type d -name '.git' | sed -r 's/\.git$//g' | grep -v '\.terraform') )
+
+for D in "${GIT_DIRS[@]}"; do
+  if [ -d "$D" ]; then
+    pushd "$D" >/dev/null
+    for d in $(ls -1d "$D" 2>/dev/null); do
+      echo
+      echo "=== $d =================================="
+      pushd "$d" >/dev/null
+      git pull && git status --short && gitupstream
+      popd >/dev/null
+      echo
+    done
+    popd >/dev/null
+  fi
+done
