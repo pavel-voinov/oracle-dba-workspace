@@ -1,0 +1,52 @@
+alias opatch='$ORACLE_HOME/OPatch/opatch'
+alias rsync='/usr/bin/rsync -a --progress -e "ssh -o StrictHostKeyChecking=no -q"'
+alias ssh='/usr/bin/ssh -o StrictHostKeyChecking=no -q'
+
+if [[ $(which rlwrap 2>/dev/null) ]]; then
+  alias adrci='rlwrap -i -D 2 $ORACLE_HOME/bin/adrci'
+  alias sqlplus='rlwrap -i -D 2 $ORACLE_HOME/bin/sqlplus -L'
+  alias sp='rlwrap -i -D 2 $ORACLE_HOME/bin/sqlplus -L'
+  alias rman='rlwrap -i -D 2 $ORACLE_HOME/bin/rman'
+  alias asmcmd='rlwrap -i -D 2 $ORACLE_HOME/bin/asmcmd -p'
+  alias ftp='rlwrap -i -D 2 /usr/bin/ftp'
+  alias impdp='rlwrap -i -D 2 $ORACLE_HOME/bin/impdp'
+  alias expdp='rlwrap -i -D 2 $ORACLE_HOME/bin/expdp'
+  alias ggsci='rlwrap -i -D 2 ./ggsci'
+  alias logdump='rlwrap -i -D 2 ./logdump'
+else
+  alias sp='$ORACLE_HOME/bin/sqlplus -L'
+fi
+
+GREP=$(which grep 2>/dev/null | head -1)
+$GREP --help 2>&1 | $GREP --quiet 'exclude-dir=' 2>/dev/null
+if [[ $? -eq 0 ]]; then
+  alias grep='$GREP --exclude-dir=.svn --exclude-dir=.git --color'
+fi
+alias tailf='tail -150f'
+alias ll='ls -l'
+alias la='ls -la'
+alias ls1='ls -1'
+alias lt='ls -lrt'
+
+alias svnci="svn ci -m 'Minor changes'"
+alias gitci="git commit -m 'Minor change'"
+alias gitlog='git log --pretty=format:"%h %ad | %s%d [%an]" --graph --date=short --since="7 days ago"'
+
+if [[ -x $ORACLE_BASE/product/sqlcl/bin/sql ]]; then
+  alias sqlcli='$ORACLE_BASE/product/sqlcl/bin/sql -noupdates -L'
+  alias sql='$ORACLE_BASE/product/sqlcl/bin/sql -noupdates -L -S'
+fi
+
+# Set GITHUB_USER in ~/.bash_profile or ~/.bashrc
+alias inv='cd ~/dba/inventory'
+alias a='cd ~/git/github.com/$GITHUB_USER/ami-provisioning/'
+alias j='cd ~/git/github.com/$GITHUB_USER/jenkins-dsl/'
+alias tm='cd ~/git/github.com/$GITHUB_USER/terraform-modules'
+alias mt='cd ~/git/github.com/$GITHUB_USER/migration-terraform'
+alias r='cd ~/dba/replication/configs'
+alias gh='cd ~/git/github.com/$GITHUB_USER'
+
+# Add utility from https://www.shellcheck.net/ with codes to ignore pushd/popd and sourcing of files defined in variables
+if [[ $(which shellcheck 2>/dev/null) ]]; then
+  alias shcheck='shellcheck --external-sources --exclude=SC2039,SC2164,SC1090,SC1117'
+fi
